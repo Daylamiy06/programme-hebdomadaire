@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>جدول الأسابيع</title>
+<script src="https://cdn.tailwindcss.com"></script>
+
+<script type="module">
+import Alpine from "https://cdn.jsdelivr.net/npm/alpinejs@3.13.7/dist/module.esm.min.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, set, get, child } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+window.Alpine = Alpine;
+
+// Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyDvvWNXn3Wht_6ki-uhbdkGzQTRa71HTTk",
+  authDomain: "programme-hebdomadaire.firebaseapp.com",
+  databaseURL: "https://programme-hebdomadaire-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "programme-hebdomadaire",
+  storageBucket: "programme-hebdomadaire.firebasestorage.app",
+  messagingSenderId: "476978354022",
+  appId: "1:476978354022:web:6514dba81ee84fc4f15aa7",
+  measurementId: "G-08HV2ZXPW"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// Alpine Component
+window.weeksComponent = function () {
+  const now = new Date();
+  const startYear = 2025;
+  return {
+    months:["يناير","فبراير","مارس","أبريل","ماي","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"],
+    years:Array.from({length: (now.getFullYear()+1)-startYear+1},(_,i)=>startYear+i),
+    days:["الأحد","الإثنين","الثلاثاء","الأربعاء","الخميس"],
+    currentMonth: now.getMonth(),
+    currentYear: now.getFullYear(),
+    students: [],
+	selectedStudentId: null,
+    selectedType: "hifz",
+	types: [{ key: "hifz", label: "الحفظ" }, { key: "review", label: "المراجعة" }, { key: "link", label: "الربط" }],
+    selectedWeek: 1,
+    loadingMain: true,
+    pressTimer: null,
+    souratesList: [],
+    weeks: [],
+    toast: '',
+    showToast: false,
+    
+    notify(msg) {
+        this.toast = msg;
+        this.showToast = true;
+        setTimeout(() => this.showToast = false, 4000);
+    },
+
+    init() {
+      this.generateAllWeeks();
+      this.loadSourates();
+      this.loadStudents();
+  	this.$watch("selectedStudentId", () => this.loadAllRows());
+      this.$watch("selectedWeek", () => this.loadAllRows());
+      this.$watch("currentMonth", () => this.generateAllWeeks());
+      this.$watch("currentYear", () => this.generateAllWeeks());
+      this.$watch("selectedType", () => this.loadAllRows());
+      Promise.all([
+      	  this.loadAllRows(),
+        	this.loadSourates(),
+        	this.generateAllWeeks(),
+    	]).then(() => {
+        	this.loadingMain = false;
+      });
+    },
+    
+    async loadStudents() {
+  	const snapshot = await get(child(ref(db), "studentsMeta"));
+  	if (!snapshot.exists()) return;
+  	const raw = snapshot.val();
+  	this.students = Object.entries(raw).map(([id, data]) => ({ id, name: data.name}));
+	},
+	
+	async addStudent() {
+  	const name = prompt("اسم الطالب :");
+  	if (!name) return;
+  	const id = "student_" + Date.now();
+  	await set(ref(db, `studentsMeta/${id}`), {name});
+  	await this.loadStudents();
+  	this.selectedStudentId = id;
+	},
+	
+	async editStudentName() {
+  	if (!this.selectedStudentId) return;
+  	const student = this.students.find(s => s.id === this.selectedStudentId);
+  	if (!student) return;
+  	const newName = prompt("تعديل اسم الطالب", student.name);
+  	if (!newName || newName === student.name) return;
+  	await set(ref(db, `studentsMeta/${student.id}/name`), newName);
+  	student.name = newName;
+	},
+	
+	startPress() {
+  	this.cancelPress();
+  	this.pressTimer = setTimeout(() => {
+    	this.editStudentName();
+  	}, 800);
+	},
+
+	cancelPress() {
+  	if (this.pressTimer) {
+    	clearTimeout(this.pressTimer);
+    	this.pressTimer = null;
+  	}
+	},
+	
+	async deleteStudent() {
+  	if (!this.selectedStudentId) return;
+  	const student = this.students.find(s => s.id === this.selectedStudentId);
+  	if (!student) return;
+  	const ok = confirm(`هل تريد حذف الطالب "${student.name}" نهائياً؟`);
+  	if (!ok) return;
+  	await set(ref(db, `students/${student.id}`), null);
+  	await set(ref(db, `studentsMeta/${student.id}`), null);
+  	this.students = this.students.filter(s => s.id !== student.id);
+  	this.selectedStudentId = this.students.length ? this.students[0].id : null;
+	},
+
+    async loadSourates() {
+      const snapshot = await get(child(ref(db), "sourates"));
+      if (!snapshot.exists()) return;
+      const raw = snapshot.val();
+      if (Array.isArray(raw)) {
+        this.souratesList = raw.filter(s => s !== null && s !== undefined);
+      } else {
+        this.souratesList = Object.keys(raw)
+          .sort((a,b)=>Number(a)-Number(b))
+          .map(k => raw[k])
+          .filter(s => s !== null && s !== undefined);
+      }
+    },
+    getVersesOf(index) {
+      const idx = Number(index);
+      if (!idx || !this.souratesList[idx - 1]) return [];
+      const count = this.souratesList[idx - 1].verset;
+      return Array.from({length: count}, (_,i)=> i+1);
+    },
+
+    generateAllWeeks() {
+      this.weeks = [];
+      const first = new Date(this.currentYear, this.currentMonth, 1);
+      const weekday = first.getDay();
+      const firstWeekSunday = new Date(first);
+      firstWeekSunday.setDate(1 - weekday);
+      for (let w = 0; w < 4; w++) {
+        const base = new Date(firstWeekSunday);
+        base.setDate(firstWeekSunday.getDate() + w * 7);
+        const rows = [];
+        for (let i = 0; i < 5; i++) {
+          const d = new Date(base);
+          d.setDate(base.getDate() + i);
+          rows.push({
+            day: this.days[i],
+            date: d.getDate(),
+            month: d.getMonth() + 1,
+            _fromSura:"",
+            _fromAya:"",
+            _toSura:"",
+            _toAya:"",
+            _note:"",
+            _errors:[false,false,false],
+            _alerts:[false,false,false,false,false,false]
+          });
+        }
+        this.weeks.push(rows);
+      }
+      // Déterminer la semaine actuelle
+  	const today = new Date();
+  	let weekIndex = 1;
+  	for (let w = 0; w < this.weeks.length; w++) {
+    	const weekStart = new Date(this.currentYear, this.currentMonth, this.weeks[w][0].date);
+    	const weekEnd = new Date(this.currentYear, this.currentMonth, this.weeks[w][this.weeks[w].length - 1].date);
+    	if (today >= weekStart && today <= weekEnd) {
+      	weekIndex = w + 1;
+      	break;
+    	}
+  	}
+  	this.selectedWeek = weekIndex;
+      this.loadAllRows();
+    },
+
+    async loadAllRows() {
+  	if (!this.weeks.length) return;
+
+  	const rows = this.weeks[this.selectedWeek - 1];
+
+  	// reset local
+  	rows.forEach(row => {
+    	row._fromSura = "";
+    	row._fromAya  = "";
+    	row._toSura   = "";
+    	row._toAya    = "";
+    	row._note     = "";
+    	row._errors   = [false,false,false];
+    	row._alerts   = [false,false,false,false,false,false];
+  	});
+
+  	const student = this.selectedStudentId;
+	  if (!student) return;
+  	const basePath = `students/${student}/${this.currentYear}/${this.currentMonth}/${this.selectedWeek}`;
+  	const snapshot = await get(child(ref(db), basePath));
+  	if (!snapshot.exists()) return;
+  	const savedWeek = snapshot.val();
+
+  	rows.forEach((row, i) => {
+    	if (!savedWeek[i]) return;
+    	if (!savedWeek[i][this.selectedType]) return;
+    	const saved = savedWeek[i][this.selectedType];
+
+    	row._fromSura = saved.fromSura ?? "";
+    	row._fromAya  = saved.fromAya ?? "";
+    	row._toSura   = saved.toSura ?? "";
+    	row._toAya    = saved.toAya ?? "";
+    	row._note     = saved.note ?? "";
+    	row._errors   = saved.errors ?? [false,false,false];
+    	row._alerts   = saved.alerts ?? [false,false,false,false,false,false];
+  	});
+	},
+
+    saveRow(idxRow) {
+      const row = this.weeks[this.selectedWeek - 1][idxRow];
+      const hasInput = (row._fromSura && row._fromAya && row._toSura && row._toAya) || row._errors.some(v => v) || row._alerts.some(v => v);
+  	const total = hasInput ? Math.max(0, 18 - (row._errors.filter(v => v).length * 3 + row._alerts.filter(v => v).length * 1.5)) : null;
+      const student = this.selectedStudentId;
+	  if (!student) return;
+      const path = `students/${student}/${this.currentYear}/${this.currentMonth}/${this.selectedWeek}/${idxRow}/${this.selectedType}`;
+      set(ref(db, path), {
+        fromSura: row._fromSura,
+        fromAya: row._fromAya,
+        type: this.selectedType,
+        toSura: row._toSura,
+        toAya: row._toAya,
+        note: row._note,
+        errors: row._errors,
+        alerts: row._alerts,
+        total: total
+      });
+    },
+
+    onSelectFromSura(idx) {
+      const row = this.weeks[this.selectedWeek - 1][idx];
+      row._fromAya = "";
+      row._toSura = row._fromSura;
+      this.saveRow(idx);
+    },
+    onSelectToSura(idx) {
+      const row = this.weeks[this.selectedWeek - 1][idx];
+      row._toAya = "";
+      this.saveRow(idx);
+    },
+    onSelectFromAya(idx) {
+  	const row = this.weeks[this.selectedWeek - 1][idx];
+  	row._toAya = row._fromAya;
+  	this.saveRow(idx);
+	},
+	onSelectToAya(idx) {
+  	const row = this.weeks[this.selectedWeek - 1][idx];
+  	if (row._fromSura === row._toSura) {
+    	if (Number(row._toAya) < Number(row._fromAya)) {
+      	row._toAya = row._fromAya;
+      	this.notify("⚠️ لا يمكن أن تكون الآية النهائية قبل الآية الابتدائية. تم التعديل تلقائياً.");
+    	}
+  	}
+  	this.saveRow(idx);
+	},
+	
+    arabicNumber(n) {
+      return String(n).replace(/\d/g, d => "٠١٢٣٤٥٦٧٨٩"[d]);
+    }
+  };
+};
+Alpine.start();
+</script>
+
+<style>
+	.outer-frame{border:2px solid #000;border-radius:2px;display:inline-block}
+	table.inner{border-collapse:collapse;width:100%}
+	table.inner th,table.inner td{border:1px solid #000;padding:.75rem;white-space:nowrap;vertical-align:middle}
+	input[type="checkbox"]:checked::before{content:"✗";color:red;font-size:1.2em;font-weight:bold;position:absolute;top:40%;left:50%;transform:translate(-50%,-50%)}
+	input[type="checkbox"]{position:relative;appearance:none;width:1.05rem;height:1.05rem;border:2px solid #6b7280;border-radius:3px;cursor:pointer}
+</style>
+
+</head>
+<body class="p-6 bg-white font-sans" x-data="weeksComponent()">
+<!-- Spinner -->
+<template x-if="loadingMain">
+  <div class="fixed inset-0 bg-white bg-opacity-70 flex items-center justify-center z-50">
+    <div class="animate-spin rounded-full h-12 w-12 border-4 border-gray-300 border-t-[#0369a1]"></div>
+  </div>
+</template>
+<!-- Mois + Année -->
+<div class="flex justify-center mb-4 gap-4">
+  <select x-model.number="currentMonth" class="border p-2">
+    <template x-for="(m,i) in months" :key="i">
+      <option :value="i" :selected="i === currentMonth" x-text="m"></option>
+    </template>
+  </select>
+  <select x-model.number="currentYear" class="border p-2">
+    <template x-for="y in years" :key="y">
+      <option :value="y" :selected="y === currentYear" x-text="arabicNumber(y)"></option>
+    </template>
+  </select>
+</div>
+<!-- Semaines -->
+<div class="flex justify-center gap-2 mb-4">
+  <template x-for="i in [1,2,3,4]" :key="i">
+    <button @click="selectedWeek=i"  class="px-4 py-2 border rounded" :class="selectedWeek===i ? 'bg-[#0369a1] text-white border-[#0369a1]' : 'bg-white text-[#0369a1] border-[#0369a1] hover:bg-gray-100'">
+      الأسبوع <span x-text="arabicNumber(i)"></span>
+    </button>
+  </template>
+</div>
+<!-- Étudiants -->
+<div class="flex justify-center mb-4">
+  <button @click="addStudent()" class="ml-2 px-4 py-2 border rounded bg-green-600 text-white hover:bg-green-700">+ إضافة طالب</button>
+  <select x-model="selectedStudentId" @dblclick="editStudentName()" @mousedown="startPress()" @touchstart="startPress()" @mouseup="cancelPress()" @mouseleave="cancelPress()" @touchend="cancelPress()" class="border p-2 text-center">
+    <option value="" selected>اختر طالباً</option>
+    <template x-for="s in students" :key="s.id">
+      <option :value="s.id" x-text="s.name"></option>
+    </template>
+  </select>
+  <button @click="deleteStudent()" class="mr-2 px-4 py-2 border rounded bg-red-600 text-white hover:bg-red-700" x-show="selectedStudentId">حذف الطالب</button>
+</div>
+<!--Type-->
+<div class="flex flex-col items-center mb-4 w-full relative" :class="!selectedStudentId ? 'opacity-50 pointer-events-none' : ''">
+  <div class="flex gap-4 w-full">
+    <template x-for="t in types" :key="t.key">
+      <button @click="selectedType = t.key" class="px-5 py-2 rounded-t-lg border-2 border-b-0" :class="selectedType === t.key ? 'bg-[#0369a1] text-white border-[#0369a1]' : 'text-[#0369a1] border-white hover:bg-gray-100'">
+        <span x-text="t.label"></span>
+      </button>
+    </template>
+  </div>
+  <div class="bg-[#0369a1] h-1 w-full"></div>
+</div>
+<!-- Tableau affiché -->
+<div x-show="weeks.length>0" class="overflow-x-auto w-full relative" :class="!selectedStudentId ? 'opacity-50 pointer-events-none' : ''">
+  <div class="outer-frame">
+    <table class="inner table-auto text-center">
+      <thead>
+        <tr>
+          <th rowspan="3" style="width:13%">اليوم والتاريخ</th>
+          <th colspan="4">صفحات العرض</th>
+          <th rowspan="3" style="width:9%">عدد الأخطاء</th>
+          <th rowspan="3" style="width:9%">عدد التنبيهات</th>
+          <th rowspan="3" style="width:9%">التقدير</th>
+          <th rowspan="3" style="width:20%">الملاحظة</th>
+        </tr>
+        <tr><th colspan="2">من</th><th colspan="2">إلى</th></tr>
+        <tr><th style="width:18%">سورة</th><th style="width:10%">آية</th><th style="width:18%">سورة</th><th style="width:10%">آية</th></tr>
+      </thead>
+      <tbody>
+        <template x-if="weeks[selectedWeek-1]">
+          <template x-for="(row,idx) in weeks[selectedWeek-1]" :key="idx">
+            <tr>
+              <td><span x-text="row.day"></span> <span x-text="arabicNumber(row.date) + '/' + arabicNumber(row.month)"></span></td>
+              <!-- من سورة -->
+              <td style="min-width: 120px;">
+                <select x-model="row._fromSura" @change="onSelectFromSura(idx)" class="border w-full text-center p-1 text-lg">
+                  <option value="">-- اختر --</option>
+                  <template x-for="(s,i) in souratesList" :key="i">
+                    <option :value="String(i+1)" :selected="String(i+1) === String(row._fromSura)" x-text="s.sourate"></option>
+                  </template>
+                </select>
+              </td>
+              <!-- من آية -->
+              <td style="min-width: 100px;">
+                <select x-model="row._fromAya" @change="onSelectFromAya(idx)" class="border w-full text-center p-1 text-lg">
+                  <option value="">-- --</option>
+                  <template x-for="v in getVersesOf(row._fromSura)" :key="v">
+                    <option :value="String(v)" :selected="String(v) === String(row._fromAya)" x-text="arabicNumber(v)"></option>
+                  </template>
+                </select>
+              </td>
+              <!-- إلى سورة -->
+              <td style="min-width: 120px;">
+                <select x-model="row._toSura" @change="onSelectToSura(idx)" class="border w-full text-center p-1 text-lg">
+                  <option value="">-- اختر --</option>
+                  <template x-for="(s,i) in souratesList" :key="i">
+                    <option :value="String(i+1)" :selected="String(i+1) === String(row._toSura)" x-text="s.sourate"></option>
+                  </template>
+                </select>
+              </td>
+              <!-- إلى آية -->
+              <td style="min-width: 100px;">
+                <select x-model="row._toAya" @change="onSelectToAya(idx)" class="border w-full text-center p-1 text-lg">
+                  <option value="">-- --</option>
+                  <template x-for="v in getVersesOf(row._toSura)" :key="v">
+                    <option :value="String(v)" :selected="String(v) === String(row._toAya)" x-text="arabicNumber(v)"></option>
+                  </template>
+                </select>
+              </td>
+              <!-- erreurs -->
+              <td>
+                <div class="flex justify-center gap-3">
+                  <template x-for="(v,i) in row._errors" :key="i">
+                    <input type="checkbox" x-model="row._errors[i]" @change="saveRow(idx)">
+                  </template>
+                </div>
+              </td>
+              <!-- alerts -->
+              <td>
+                <div class="flex justify-center gap-2 flex-wrap">
+                  <template x-for="(v,i) in row._alerts" :key="i">
+                    <input type="checkbox" x-model="row._alerts[i]" @change="saveRow(idx)">
+                  </template>
+                </div>
+              </td>
+              <!-- evaluation -->
+              <td class="font-bold">
+                <span x-text="(() => {
+                  const hasInput = (row._fromSura && row._fromAya && row._toSura && row._toAya) || row._errors.some(v=>v) || row._alerts.some(v=>v);
+  				if (!hasInput) return '-- --';
+                  const deducted = row._errors.filter(v=>v).length*3 + row._alerts.filter(v=>v).length*1.5;
+                  const total = Math.max(0,18 - deducted);
+                  return total>=16?'ممتاز':total>=14?'جيد جدا':total>=12?'جيد':total>=10?'مقبول':'راسب';
+                })()"></span>
+              </td>
+              <!-- note -->
+              <td style="min-width: 150px";>
+                <input class="border w-full p-1 text-center" placeholder="ملاحظة" x-model="row._note" @change="saveRow(idx)">
+              </td>
+            </tr>
+          </template>
+        </template>
+      </tbody>
+    </table>
+  </div>
+</div>
+<!-- toast -->
+<div x-show="showToast" x-text="toast" class="fixed bottom-4 right-4 bg-gray-800 text-white px-4 py-2 rounded shadow-lg text-sm" x-transition.opacity></div>
+</body>
+</html>
