@@ -37,6 +37,7 @@ window.weeksComponent = function () {
     days:["الأحد","الإثنين","الثلاثاء","الأربعاء","الخميس"],
     currentMonth: now.getMonth(),
     currentYear: now.getFullYear(),
+    currentDepot: "madrasa1",
     students: [],
 	selectedStudentId: null,
     selectedType: "hifz",
@@ -67,14 +68,20 @@ window.weeksComponent = function () {
       Promise.all([
       	  this.loadAllRows(),
         	this.loadSourates(),
-        	this.generateAllWeeks(),
+        	//this.generateAllWeeks(),
     	]).then(() => {
         	this.loadingMain = false;
       });
     },
     
+    onDepotChange() {
+  	this.students = [];
+  	this.selectedStudentId = null;
+  	this.loadStudents();
+	},
+    
     async loadStudents() {
-  	const snapshot = await get(child(ref(db), "studentsMeta"));
+  	const snapshot = await get(child(ref(db), `studentsMeta/${this.currentDepot}`));
   	if (!snapshot.exists()) return;
   	const raw = snapshot.val();
   	this.students = Object.entries(raw).map(([id, data]) => ({ id, name: data.name}));
@@ -84,7 +91,7 @@ window.weeksComponent = function () {
   	const name = prompt("اسم الطالب :");
   	if (!name) return;
   	const id = "student_" + Date.now();
-  	await set(ref(db, `studentsMeta/${id}`), {name});
+  	await set(ref(db, `studentsMeta/${this.currentDepot}/${id}`), { name });
   	await this.loadStudents();
   	this.selectedStudentId = id;
 	},
@@ -93,9 +100,9 @@ window.weeksComponent = function () {
   	if (!this.selectedStudentId) return;
   	const student = this.students.find(s => s.id === this.selectedStudentId);
   	if (!student) return;
-  	const newName = prompt("تعديل اسم الطالب", student.name);
+  	const newName = prompt("تعديل اسم الطالب :", student.name);
   	if (!newName || newName === student.name) return;
-  	await set(ref(db, `studentsMeta/${student.id}/name`), newName);
+  	await set(ref(db, `studentsMeta/${this.currentDepot}/${student.id}/name`), newName);
   	student.name = newName;
 	},
 	
@@ -119,8 +126,8 @@ window.weeksComponent = function () {
   	if (!student) return;
   	const ok = confirm(`هل تريد حذف الطالب "${student.name}" نهائياً؟`);
   	if (!ok) return;
-  	await set(ref(db, `students/${student.id}`), null);
-  	await set(ref(db, `studentsMeta/${student.id}`), null);
+  	await set(ref(db, `students/${this.currentDepot}/${student.id}`), null);
+  	await set(ref(db, `studentsMeta/${this.currentDepot}/${student.id}`), null);
   	this.students = this.students.filter(s => s.id !== student.id);
   	this.selectedStudentId = this.students.length ? this.students[0].id : null;
 	},
@@ -146,47 +153,63 @@ window.weeksComponent = function () {
     },
 
     generateAllWeeks() {
-      this.weeks = [];
-      const first = new Date(this.currentYear, this.currentMonth, 1);
-      const weekday = first.getDay();
-      const firstWeekSunday = new Date(first);
-      firstWeekSunday.setDate(1 - weekday);
-      for (let w = 0; w < 4; w++) {
-        const base = new Date(firstWeekSunday);
-        base.setDate(firstWeekSunday.getDate() + w * 7);
-        const rows = [];
-        for (let i = 0; i < 5; i++) {
-          const d = new Date(base);
-          d.setDate(base.getDate() + i);
-          rows.push({
-            day: this.days[i],
-            date: d.getDate(),
-            month: d.getMonth() + 1,
-            _fromSura:"",
-            _fromAya:"",
-            _toSura:"",
-            _toAya:"",
-            _note:"",
-            _errors:[false,false,false],
-            _alerts:[false,false,false,false,false,false]
-          });
-        }
-        this.weeks.push(rows);
-      }
-      // Déterminer la semaine actuelle
-  	const today = new Date();
-  	let weekIndex = 1;
-  	for (let w = 0; w < this.weeks.length; w++) {
-    	const weekStart = new Date(this.currentYear, this.currentMonth, this.weeks[w][0].date);
-    	const weekEnd = new Date(this.currentYear, this.currentMonth, this.weeks[w][this.weeks[w].length - 1].date);
-    	if (today >= weekStart && today <= weekEnd) {
-      	weekIndex = w + 1;
-      	break;
+  	this.weeks = [];
+  	const year  = this.currentYear;
+  	const month = this.currentMonth;
+  	const firstOfMonth = new Date(year, month, 1);
+  	const lastOfMonth  = new Date(year, month + 1, 0);
+  
+  	// Point de départ : dimanche de la semaine du 1er
+  	const start = new Date(firstOfMonth);
+  	start.setDate(start.getDate() - start.getDay());
+  	let sunday = new Date(start);
+  
+  	while (true) {
+    	const week = [];
+    	let hasDayInMonth = false;
+
+    	// Construction dim → jeu à partir du dimanche
+    	for (let i = 0; i <= 4; i++) {
+      	const d = new Date(sunday);
+      	d.setDate(sunday.getDate() + i);
+      	if (d.getMonth() === month) {hasDayInMonth = true;}
+      	week.push({
+        	day: this.days[d.getDay()],
+        	date: d.getDate(),
+        	month: d.getMonth() + 1,
+        	_fromSura:"",
+        	_fromAya:"",
+        	_toSura:"",
+        	_toAya:"",
+        	_note:"",
+        	_errors:[false,false,false],
+        	_alerts:[false,false,false,false,false,false]
+      	});
     	}
+    	// La semaine existe si au moins un jour appartient au mois
+    	if (hasDayInMonth) {this.weeks.push(week);}
+    	// Arrêt après la dernière semaine utile
+    	if (sunday > lastOfMonth && !hasDayInMonth) {break;}
+    	sunday.setDate(sunday.getDate() + 7);
   	}
-  	this.selectedWeek = weekIndex;
-      this.loadAllRows();
-    },
+  
+  	// Suppression de la semaine précédente si chevauchement
+      if (this.weeks.length > 1) {
+        const firstWeek = this.weeks[0];
+        const hasPrevMonthDay = firstWeek.some(d => d.month - 1 !== this.currentMonth);
+        if (hasPrevMonthDay) {this.weeks.shift();}
+      }
+
+  	// Sélection automatique de la semaine courante
+  	const today = new Date();
+  	this.selectedWeek = 1;
+  	this.weeks.forEach((week, i) => {
+    	const start = new Date(year, week[0].month - 1, week[0].date);
+    	const end   = new Date(year, week[4].month - 1, week[4].date);
+    	if (today >= start && today <= end) {this.selectedWeek = i + 1;}
+  	});
+  	this.loadAllRows();
+	},
 
     async loadAllRows() {
   	if (!this.weeks.length) return;
@@ -206,7 +229,7 @@ window.weeksComponent = function () {
 
   	const student = this.selectedStudentId;
 	  if (!student) return;
-  	const basePath = `students/${student}/${this.currentYear}/${this.currentMonth}/${this.selectedWeek}`;
+  	const basePath = `students/${this.currentDepot}/${student}/${this.currentYear}/${this.currentMonth}/${this.selectedWeek}`;
   	const snapshot = await get(child(ref(db), basePath));
   	if (!snapshot.exists()) return;
   	const savedWeek = snapshot.val();
@@ -232,7 +255,7 @@ window.weeksComponent = function () {
   	const total = hasInput ? Math.max(0, 18 - (row._errors.filter(v => v).length * 3 + row._alerts.filter(v => v).length * 1.5)) : null;
       const student = this.selectedStudentId;
 	  if (!student) return;
-      const path = `students/${student}/${this.currentYear}/${this.currentMonth}/${this.selectedWeek}/${idxRow}/${this.selectedType}`;
+      const path = `students/${this.currentDepot}/${student}/${this.currentYear}/${this.currentMonth}/${this.selectedWeek}/${idxRow}/${this.selectedType}`;
       set(ref(db, path), {
         fromSura: row._fromSura,
         fromAya: row._fromAya,
@@ -288,7 +311,6 @@ Alpine.start();
 	input[type="checkbox"]:checked::before{content:"✗";color:red;font-size:1.2em;font-weight:bold;position:absolute;top:40%;left:50%;transform:translate(-50%,-50%)}
 	input[type="checkbox"]{position:relative;appearance:none;width:1.05rem;height:1.05rem;border:2px solid #6b7280;border-radius:3px;cursor:pointer}
 </style>
-
 </head>
 <body class="p-6 bg-white font-sans" x-data="weeksComponent()">
 <!-- Spinner -->
@@ -297,8 +319,12 @@ Alpine.start();
     <div class="animate-spin rounded-full h-12 w-12 border-4 border-gray-300 border-t-[#0369a1]"></div>
   </div>
 </template>
-<!-- Mois + Année -->
+<!-- Mois + Année + Dépôt -->
 <div class="flex justify-center mb-4 gap-4">
+  <select x-model="currentDepot" @change="onDepotChange()" class="border p-2 ">
+    <option value="madrasa1">حلقة أعضاء هيئة التدريس</option>
+    <option value="madrasa2">حلقة السكن الطلابي</option>
+  </select>
   <select x-model.number="currentMonth" class="border p-2">
     <template x-for="(m,i) in months" :key="i">
       <option :value="i" :selected="i === currentMonth" x-text="m"></option>
@@ -312,9 +338,9 @@ Alpine.start();
 </div>
 <!-- Semaines -->
 <div class="flex justify-center gap-2 mb-4">
-  <template x-for="i in [1,2,3,4]" :key="i">
-    <button @click="selectedWeek=i"  class="px-4 py-2 border rounded" :class="selectedWeek===i ? 'bg-[#0369a1] text-white border-[#0369a1]' : 'bg-white text-[#0369a1] border-[#0369a1] hover:bg-gray-100'">
-      الأسبوع <span x-text="arabicNumber(i)"></span>
+  <template x-for="(week, i) in weeks" :key="i">
+    <button @click="selectedWeek = i + 1" class="px-4 py-2 border rounded"
+      :class="selectedWeek === i + 1 ? 'bg-[#0369a1] text-white border-[#0369a1]' : 'bg-white text-[#0369a1] border-[#0369a1] hover:bg-gray-100'">    الأسبوع <span x-text="arabicNumber(i + 1)"></span>
     </button>
   </template>
 </div>
