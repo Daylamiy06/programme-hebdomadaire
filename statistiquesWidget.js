@@ -1,4 +1,4 @@
-export async function renderStatsWidget({ student, year, month, container }) {
+export async function renderStatsWidget({ depot, studentId, year, month, type, container }) {
   container.innerHTML = `
     <div class="max-w-4xl mx-auto bg-white p-2 rounded shadow">
 
@@ -67,12 +67,12 @@ export async function renderStatsWidget({ student, year, month, container }) {
     `إحصائيات شهر ${Number(month)+1} لسنة ${year}`;
 
   // Firebase path
-  const path = `students/student${student}/${year}/${month}`;
+  const path = `students/${depot}/${studentId}/${year}/${month}`;
   const snapshot = await get(child(ref(db), path));
   if (!snapshot.exists()) return;
   const data = snapshot.val();
   let totals = [];
-  let byWeek = {1:[],2:[],3:[],4:[]};
+  let byWeek = {};
   let byDay = {0:[],1:[],2:[],3:[],4:[]};
   let evalCount = {A:0,B:0,C:0,D:0,E:0};
   const evalLabel = t =>
@@ -80,10 +80,13 @@ export async function renderStatsWidget({ student, year, month, container }) {
 
   for (let week in data) {
     for (let row in data[week]) {
-      const r = data[week][row];
+      const rowData = data[week][row];
+      if (!rowData[type]) continue;
+      const r = rowData[type];
       if (r.total === null || r.total === undefined) continue;
       const t = Number(r.total);
       totals.push(t);
+      if (!byWeek[week]) byWeek[week] = [];
       byWeek[week].push(t);
       byDay[row].push(t);
       evalCount[evalLabel(t)]++;
